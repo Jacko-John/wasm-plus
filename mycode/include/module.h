@@ -1,11 +1,16 @@
 #ifndef WASMC_MODULE_H
 #define WASMC_MODULE_H
 
-typedef int i32;
-typedef long long i64;
+#define true 1
+#define false 0
+typedef signed int i32;
+typedef signed long long i64;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef unsigned char u8;
+typedef double f64;
+typedef float f32;
+typedef unsigned char boolean;
 
 #define WASM_MAGIC_CODE 0x6d736100// 代表这是一个wasm文件
 #define WASM_VERSION 0x01         // 版本号
@@ -17,16 +22,18 @@ typedef unsigned char u8;
 #define BLOCK_STACK_SIZE 0x1000// 块栈大小4KB
 #define BR_Table_SIZE 0x1000   // 跳转表大小64KB
 
-#define TYPE_I32 0x7f// 32位整型
-#define TYPE_I64 0x7e// 64位整型
-#define TYPE_F32 0x7d// 32位浮点型
-#define TYPE_F64 0x7c// 64位浮点型
+#define TYPE_I32 0x7f // 32位整型   mask 0x01
+#define TYPE_I64 0x7e // 64位整型   mask 0x02
+#define TYPE_F32 0x7d // 32位浮点型 mask 0x03
+#define TYPE_F64 0x7c // 64位浮点型 mask 0x04
+#define TYPE_V128 0x7b// 128位整型  mask 0x05
 
-#define TYPE_REF_FUNC 0x70// 函数引用类型
-#define TYPE_BLOCK 0x40   // 块类型
+#define TYPE_BLOCK 0x40   // 块类型        mask 0x40
+#define TYPE_FUNC 0x60    // 函数类型      mask 0x20
+#define TYPE_REF_FUNC 0x70// 函数引用类型  mask 0x10
 
 #define IMPORT_FUNC 0x00  // 导入函数
-#define IMPORT_Table 0x01 // 导入表
+#define IMPORT_TABLE 0x01 // 导入表
 #define IMPORT_MEM 0x02   // 导入内存
 #define IMPORT_GLOBAL 0x03// 导入全局变量
 
@@ -53,13 +60,13 @@ typedef struct {
     u32 result_cnt;// 返回值数量
     u32 *results;  // 返回值类型集合
     u64 mask;      // 基于控制块（包含函数）签名计算的唯一掩码值
-} BlockSignature;
+} Type;
 
 // 控制块（包含函数）结构体
 typedef struct {
-    u8 block_type;       // 控制块类型，包含 5 种，分别是 0x00: function, 0x01: init_exp, 0x02: block, 0x03: loop, 0x04: if
-    BlockSignature *type;// 控制块签名，即控制块的返回值的数量和类型
-    u32 func_idx;        // 函数在所有函数中的索引（仅针对控制块类型为函数的情况）
+    u8 block_type;// 控制块类型，包含 5 种，分别是 0x00: function, 0x01: init_exp, 0x02: block, 0x03: loop, 0x04: if
+    Type *type;   // 控制块签名，即控制块的返回值的数量和类型
+    u32 func_idx; // 函数在所有函数中的索引（仅针对控制块类型为函数的情况）
 
     u32 local_count;// 局部变量数量（仅针对控制块类型为函数的情况）
     u32 *locals;    // 用于存储局部变量的值（仅针对控制块类型为函数的情况）
@@ -101,6 +108,7 @@ typedef struct {
 // 全局变量值 / 操作数栈的值结构体
 typedef struct {
     u8 type;// 值类型
+    u8 mut; // 是否可变
     union {
         u32 uint32;
         i32 int32;
@@ -137,8 +145,8 @@ typedef struct {
     const u8 *bytes;// 用于存储 Wasm 二进制模块的内容
     u32 byte_cnt;   // Wasm 二进制模块的字节数
 
-    BlockSignature *func_types;// 用于存储模块中所有函数签名
-    u32 type_cnt;              // 模块中所有函数签名的数量
+    Type *func_types;// 用于存储模块中所有函数签名
+    u32 type_cnt;    // 模块中所有函数签名的数量
 
     u32 import_func_cnt; // 导入函数的数量
     u32 function_cnt;    // 所有函数的数量（包括导入函数）
@@ -146,7 +154,7 @@ typedef struct {
     Block *funcs;        // 用于存储模块中所有函数（包括导入函数和模块内定义函数）
     Block **block_lookup;// 模块中所有 Block 的 map，其中 key 为为对应操作码 Block_/Loop/If 的地址
 
-    Table Table;// 表
+    Table table;// 表
 
     Memory memory;// 内存
 
