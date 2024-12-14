@@ -27,18 +27,18 @@ void read_import_section(Module *m, const u8 *bytes, u32 *pos) {
         // 读取导入项类型 tag（四种类型：函数、表、内存、全局变量）
         u32 extern_type = bytes[(*pos)++];
 
-        u32 type_index, fidx;
+        u32 idx, fidx;
         u8 global_type, mutability;
 
         // 根据不同的导入项类型，读取对应的内容
         switch (extern_type) {
             case IMPORT_FUNC:
                 // 读取函数签名索引 type_idx
-                type_index = read_LEB128_unsigned(bytes, pos, 32);
+                idx = read_LEB128_unsigned(bytes, pos, 32);
                 break;
             case IMPORT_TABLE:
-                // 解析表段中的表 table_type（目前表段只会包含一张表）
-                parse_table_type(m, pos);
+                // 解析表段中的表 table_type
+                idx = parse_table_type(m, pos);
                 break;
             case IMPORT_MEM:
                 // 解析内存段中内存 mem_type（目前模块只会包含一块内存）
@@ -57,6 +57,7 @@ void read_import_section(Module *m, const u8 *bytes, u32 *pos) {
 
         void *val;
         char *err, *sym = malloc(module_len + field_len + 5);
+        Table *table;
 
         // 尝试从导入的模块中查找导入项，并将导入项的值赋给 val
         // 第一个句柄参数为模块名 import_module
@@ -91,29 +92,19 @@ void read_import_section(Module *m, const u8 *bytes, u32 *pos) {
                 // 设置【本地模块中对应函数的指针 func_ptr】指向【导入函数的实际值】
                 func->func_ptr = val;
                 // 设置【导入函数签名】为【本地模块中对应函数的函数签名】
-                func->type = &m->func_types[type_index];
+                func->type = &m->func_types[idx];
                 break;
             case IMPORT_TABLE:
                 // 导入项为表的情况
-
-                // 一个模块只能定义一张表，如果 m->table.entries 不为空，说明已经存在表，则报错
-                ASSERT(!m->table.entries, "More than 1 table not supported\n")
+                table = &m->tables[idx];
                 Table *tval = val;
-                m->table.entries = val;
-                // 如果【本地模块的表的当前元素数量】大于【导入表的元素数量上限】，则报错
-                ASSERT(m->table.cur_size <= tval->max_size, "Imported table is not large enough\n")
-                m->table.entries = *(u32 **) val;
-                // 设置【导入表的当前元素数量】为【本地模块表的当前元素数量】
-                m->table.cur_size = tval->cur_size;
-                // 设置【导入表的元素数量限制上限】为【本地模块表的元素数量限制上限】
-                m->table.max_size = tval->max_size;
-                // 设置【导入表的存储的元素】为【本地模块表的存储的元素】
-                m->table.entries = tval->entries;
+                table->cur_size = tval->cur_size;
+                table->max_size = tval->max_size;
+                table->entries = tval->entries;
                 break;
             case IMPORT_MEM:
                 // 导入项为内存的情况
-
-                // 一个模块只能定义一块内存，如果 m->memory.bytes 不为空，说明已经存在表，则报错
+                // 一个模块只能定义一块内存，如果 m->memory.bytes 不为空，说明已经存在内存，则报错
                 ASSERT(!m->memory.bytes, "More than 1 memory not supported\n")
                 Memory *mval = val;
                 // 如果【本地模块的内存的当前页数】大于【导入内存的最大页数】，则报错

@@ -60,7 +60,15 @@ u64 get_type_mask(Type *type);
 // 根据表示该控制块的类型的值（占一个字节），返回控制块的类型（或签名），即控制块的返回值的数量和类型
 // 0x7f 表示有一个 i32 类型返回值、0x7e 表示有一个 i64 类型返回值、0x7d 表示有一个 f32 类型返回值、0x7c 表示有一个 f64 类型返回值、0x40 表示没有返回值
 // 注：目前多返回值提案还没有进入 Wasm 标准，根据当前版本的 Wasm 标准，控制块不能有参数，且最多只能有一个返回值
-Type *get_block_type(u8 value_type);
+Type *get_block_type(const Module *m, const u8 *bytes, u32 pos);
+
+// 收集所有本地模块定义的函数中 Block_/Loop/If 控制块的相关信息，例如起始地址、结束地址、跳转地址、控制块类型等，
+// 便于后续虚拟机解释执行指令时可以借助这些信息
+void find_blocks(Module *m);
+
+// 在单条指令中，除了占一个字节的操作码之外，后面可能也会紧跟着立即数，如果有立即数，则直接跳过立即数
+// 注：指令是否存在立即数，是由操作数的类型决定，这也是 Wasm 标准规范的内容之一
+void skip_immediate(const u8 *bytes, u32 *pos);
 
 // 符号扩展 (sign extension)
 // 分以下两种情况：

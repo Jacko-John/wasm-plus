@@ -227,7 +227,7 @@ typedef enum {
     I64TruncSatF64S = 6,// 0xFC 6:u32                      → i64.trunc_sat_f64_s
     I64TruncSatF64U = 7,// 0xFC 7:u32                      → i64.trunc_sat_f64_u
     /*内存指令*/
-    MemoryInit = 8, // 0xFC 8:u32 x dataidx 0x00           → memory.init x
+    MemoryInit = 8, // 0xFC 8:u32 x:dataidx 0x00           → memory.init x
     DataDrop = 9,   // 0xFC 9:u32 x:dataidx                → data.drop x
     MemoryCopy = 10,// 0xFC 10:u32 0x00 0x00               → memory.copy
     MemoryFill = 11,// 0xFC 11:u32 0x00                    → memory.fill

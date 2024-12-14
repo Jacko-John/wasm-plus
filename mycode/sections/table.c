@@ -14,12 +14,11 @@ void read_table_section(Module *m, const u8 *bytes, u32 *pos) {
 
     // 读取表的数量
     u32 table_count = read_LEB128_unsigned(bytes, pos, 32);
-    // 模块最多只能定义一张表，因此 table_count 必需为 1
-    ASSERT(table_count == 1, "More than 1 table not supported\n")
 
     // 解析表段中的表 table_type（目前模块只会包含一张表）
-    parse_table_type(m, pos);
-
-    // 为存储表中的元素申请内存（在解析元素段时会用到--将元素段中的索引存储到刚申请的内存中）
-    m->table.entries = acalloc(m->table.cur_size, sizeof(u32), "Module->table.entries");
+    while (table_count--) {
+        u32 idx = parse_table_type(m, pos);
+        // 为存储表中的元素申请内存（在解析元素段时会用到--将元素段中的索引存储到刚申请的内存中）
+        m->tables[idx].entries = acalloc(m->tables[idx].cur_size, sizeof(u32), "Module->tables.entries");
+    }
 }

@@ -2,208 +2,6 @@
 #include "../include/instructions.h"
 #include "../include/sections.h"
 #include "../include/utils.h"
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-// 在单条指令中，除了占一个字节的操作码之外，后面可能也会紧跟着立即数，如果有立即数，则直接跳过立即数
-// 注：指令是否存在立即数，是由操作数的类型决定，这也是 Wasm 标准规范的内容之一
-void skip_immediate(const u8 *bytes, u32 *pos) {
-    // 读取操作码
-    u32 opcode = bytes[*pos];
-    u32 count;
-    *pos = *pos + 1;
-    // 根据操作码类型，判断其有占多少位的立即数（或者没有立即数），并直接跳过该立即数
-    switch (opcode) {
-        /*
-         * 控制指令
-         * */
-        case Block_:
-        case Loop:
-        case If:
-            // Block_/Loop/If 指令的立即数有两部分，第一部分表示控制块的返回值类型（占 1 个字节），
-            // 第二部分为子表达式（Block_/Loop 有一个子表达式，If 有两个子表达式）
-            // 注：子表达式无需跳过，因为 find_block 主要就是要从控制块的表达式（包括子表达式）收集控制块的相关信息
-            read_LEB128_unsigned(bytes, pos, 7);
-            break;
-        case Br:
-        case BrIf:
-            // 跳转指令的立即数表示跳转的目标标签索引（占 4 个字节）
-            read_LEB_unsigned(bytes, pos, 32);
-            break;
-        case BrTable:
-            // BrTable 指令的立即数是指定的 n+1 个跳转的目标标签索引（每个索引值占 4 个字节）
-            // 其中前 n 个目标标签索引构成一个索引表，最后 1 个标签索引为默认索引
-            // 最终跳转到哪一个目标标签索引，需要在运行期间才能决定
-            count = read_LEB_unsigned(bytes, pos, 32);
-            for (u32 i = 0; i < count; i++) {
-                read_LEB_unsigned(bytes, pos, 32);
-            }
-            read_LEB_unsigned(bytes, pos, 32);
-            break;
-        case Call:
-            // Call 指令的立即数表示被调用函数的索引（占 4 个字节）
-            read_LEB_unsigned(bytes, pos, 32);
-            break;
-        case CallIndirect:
-            // CallIndirect 指令有两个立即数，第一个立即数表示被调用函数的类型索引（占 4 个字节），
-            // 第二个立即数为保留立即数（占 1 个比特位），暂无用途
-            read_LEB_unsigned(bytes, pos, 32);
-            read_LEB_unsigned(bytes, pos, 1);
-            break;
-
-        /*
-         * 变量指令
-         * */
-        case LocalGet:
-        case LocalSet:
-        case LocalTee:
-        case GlobalGet:
-        case GlobalSet:
-            // 变量指令的立即数用于表示全局/局部变量的索引（占 4 个字节）
-            read_LEB_unsigned(bytes, pos, 32);
-            break;
-
-        /*
-         * 内存指令
-         * */
-        case I32Load ... I64Store32:
-            // 内存加载/存储指令有两个立即数，第一个立即数表示内存偏移量（占 4 个字节），
-            // 第二个立即数表示对齐提示（占 4 个字节）
-            read_LEB_unsigned(bytes, pos, 32);
-            read_LEB_unsigned(bytes, pos, 32);
-            break;
-        case MemorySize:
-        case MemoryGrow:
-            // 内存大小/增加指令的立即数表示所操作的内存索引（占 1 个比特位）
-            // 由于当前 Wasm 规范规定一个模块最多只能导入或定义一块内存，所以目前必须为 0
-            read_LEB_unsigned(bytes, pos, 1);
-            break;
-        case I32Const:
-            // I32Const 指令的立即数表示 32 有符号整数（占 4 个字节）
-            read_LEB_unsigned(bytes, pos, 32);
-            break;
-        case I64Const:
-            // F32Const 指令的立即数表示 64 有符号整数（占 8 个字节）
-            read_LEB_unsigned(bytes, pos, 64);
-            break;
-        case F32Const:
-            // F32Const 指令的立即数表示 32 位浮点数（占 4 个字节）
-            // 注：LEB128 编码仅针对整数，而该指令的立即数为浮点数，并没有被编码，而是直接写入到 Wasm 二进制文件中的
-            *pos += 4;
-            break;
-        case F64Const:
-            // F64Const 指令的立即数表示 64 位浮点数（占 8 个字节）
-            // 注：LEB128 编码仅针对整数，而该指令的立即数为浮点数，并没有被编码，而是直接写入到 Wasm 二进制文件中的
-            *pos += 8;
-            break;
-        case TruncSat:
-            // TruncSat 指令的操作码由两个字节表示，第二个字节的数值用来表示不同类型的浮点数和整数之间的转换
-            read_LEB128_unsigned(bytes, pos, 8);
-            break;
-        default:
-            // 其他操作码没有立即数
-            // 注：Wasm 指令大部分指令没有立即数
-            break;
-    }
-}
-
-// 收集所有本地模块定义的函数中 Block_/Loop/If 控制块的相关信息，例如起始地址、结束地址、跳转地址、控制块类型等，
-// 便于后续虚拟机解释执行指令时可以借助这些信息
-void find_blocks(Module *m) {
-    Block *function;
-    Block *block;
-    // 声明用于在遍历过程中存储控制块 block 的相关信息的栈
-    Block *blockstack[BLOCK_STACK_SIZE];
-    int top = -1;
-    u8 opcode = Unreachable;
-
-    // 遍历 m->functions 中所有的本地模块定义的函数，从每个函数字节码部分中收集 Block_/Loop/If 控制块的相关信息
-    // 注：跳过从外部模块导入的函数，原因是导入函数的执行只需要执行 func_ptr 指针所指向的真实函数即可，无需通过虚拟机执行指令的方式
-    for (u32 f = m->import_func_cnt; f < m->function_cnt; f++) {
-        // 获取单个函数对应的结构体
-        function = &m->funcs[f];
-
-        // 从该函数的字节码部分的【起始地址】开始收集 Block_/Loop/If 控制块的相关信息--遍历字节码中的每条指令
-        u32 pos = function->start_addr;
-        // 直到该函数的字节码部分的【结束地址】结束
-        while (pos <= function->end_addr) {
-            // 每次 while 循环都会分析一条指令，而每条指令都是以占单个字节的操作码开始
-
-            // 获取操作码，根据操作码类型执行不同逻辑
-            opcode = m->bytes[pos];
-            switch (opcode) {
-                case Block_:
-                case Loop:
-                case If:
-                    // 如果操作码为 Block_/Loop/If 之一，则声明一个 Block 结构体
-                    block = acalloc(1, sizeof(Block), "Block");
-
-                    // 设置控制块的块类型：Block_/Loop/If
-                    block->block_type = opcode;
-
-                    // 由于 Block_/Loop/If 操作码的立即数用于表示该控制块的类型（占一个字节）
-                    // 所以可以根据该立即数，来获取控制块的类型，即控制块的返回值的数量和类型
-
-                    // get_block_type 根据表示该控制块的类型的值（占一个字节），返回控制块的签名，即控制块的返回值的数量和类型
-                    // 0x7f 表示有一个 i32 类型返回值、0x7e 表示有一个 i64 类型返回值、0x7d 表示有一个 f32 类型返回值、0x7c 表示有一个 f64 类型返回值、0x40 表示没有返回值
-                    // 注：目前多返回值提案还没有进入 Wasm 标准，根据当前版本的 Wasm 标准，控制块不能有参数，且最多只能有一个返回值
-                    block->type = get_block_type(m->bytes[pos + 1]);
-                    // 设置控制块的起始地址
-                    block->start_addr = pos;
-
-                    // 向控制块栈中添加该控制块对应结构体
-                    blockstack[++top] = block;
-                    // 向 m->block_lookup 映射中添加该控制块对应结构体，其中 key 为对应操作码 Block_/Loop/If 的地址
-                    m->block_lookup[pos] = block;
-                    break;
-                case Else_:
-                    // 如果当前控制块中存在操作码为 Else_ 的指令，则当前控制块的块类型必须为 If
-                    ASSERT(blockstack[top]->block_type == If, "Else not matched with if\n")
-
-                    // 将 Else_ 指令的下一条指令地址，设置为该控制块的 else_addr，即 else 分支对应的字节码的首地址，
-                    // 便于后续虚拟机在执行指令时，根据条件跳转到 else 分支对应的字节码继续执行指令
-                    blockstack[top]->else_addr = pos + 1;
-                    break;
-                case End_:
-                    // 如果操作码 End_ 的地址就是函数的字节码部分的【结束地址】，说明该控制块为该函数的最后一个控制块，则直接退出
-                    if (pos == function->end_addr) {
-                        break;
-                    }
-
-                    // 如果执行了 End_ 指令，说明至少收集了一个控制块的相关信息，所以 top 不可能是初始值 -1，至少大于等于 0
-                    ASSERT(top >= 0, "Blockstack underflow\n")
-
-                    // 从控制块栈栈弹出该控制块
-                    block = blockstack[top--];
-
-                    // 将操作码 End_ 的地址设置为控制块的结束地址
-                    block->end_addr = pos;
-                    // 设置控制块的跳转地址 br_addr
-                    if (block->block_type == Loop) {
-                        // 如果是 Loop 类型的控制块，需要循环执行，所以跳转地址就是该控制块开头指令（即 Loop 指令）的下一条指令地址
-                        // 注：Loop 指令占用两个字节（1 字节操作码 + 1 字节操作数），所以需要加 2
-                        block->br_addr = block->start_addr + 2;
-                    } else {
-                        // 如果是非 Loop 类型的控制块，则跳转地址就是该控制块的结尾地址，也就是操作码 End_ 的地址
-                        block->br_addr = pos;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            // 在单条指令中，除了占一个字节的操作码之外，后面可能也会紧跟着立即数，如果有立即数，则直接跳过立即数去处理下一条指令的操作码
-            // 注：指令是否存在立即数，是由操作数的类型决定，这也是 Wasm 标准规范的内容之一
-            skip_immediate(m->bytes, &pos);
-        }
-        // 当执行完 End_ 分支后，top 应该重新回到 -1，否则就是没有执行 End_ 分支
-        ASSERT(top == -1, "Function ended in middle of block\n")
-        // 控制块应该以操作码 End_ 结束
-        ASSERT(opcode == End_, "Function block did not end with 0xb\n")
-    }
-}
-
 
 // 解析 Wasm 二进制文件内容，将其转化成内存格式 Module，以便后续虚拟机基于此执行对应指令
 Module *load_module(const u8 *bytes, const u32 byte_cnt) {
@@ -223,6 +21,7 @@ Module *load_module(const u8 *bytes, const u32 byte_cnt) {
 
     m->bytes = bytes;
     m->byte_cnt = byte_cnt;
+    // ? 逆天内存占用
     m->block_lookup = acalloc(m->byte_cnt, sizeof(Block *), "function->block_lookup");
 
     m->type_cnt = 0;
@@ -230,6 +29,7 @@ Module *load_module(const u8 *bytes, const u32 byte_cnt) {
     m->function_cnt = 0;
     m->export_cnt = 0;
     m->global_cnt = 0;
+    m->table_cnt = 0;
 
     // 起始函数索引初始值设置为 -1
     m->start_func = -1;
@@ -330,125 +130,48 @@ Module *load_module(const u8 *bytes, const u32 byte_cnt) {
 
                 // 元素段编码格式如下：
                 // elem_sec: 0x09|byte_count|vec<elem>
-                // elem: table_idx|offset_expr|vec<func_id>
+                // elem:
+                //        0|expr|vec<func_idx>                       => active mode in table 0
+                //        1|elem_kind|vec<func_idx>                  => passive mode
+                //        2|table_idx|expr|elem_kind|vec<func_idx>   => active mode with table index
+                //        3|elem_kind|vec<func_idx>                  => declarative mode
+                //        4|expr|vec<expr>                           => active mode in table 0
+                //        5|ref_type|vec<expr>                       => passive mode
+                //        6|table_idx|expr|ref_type|vec<expr>        => active mode with table index
+                //        7|ref_type|vec<expr>                       => declarative mode
+                // elem_kind: 0x00 => funcref
 
                 // 读取元素数量
                 u32 elem_count = read_LEB128_unsigned(bytes, &pos, 32);
 
+                u32 offset, num_elem;
+                Table *table;
                 // 依次对表中每个元素进行初始化
                 for (u32 c = 0; c < elem_count; c++) {
-                    // 读取表索引 table_idx（即初始化哪张表）
-                    u32 index = read_LEB128_unsigned(bytes, &pos, 32);
-                    // 目前 Wasm 版本规定一个模块只能定义一张表，所以 index 只能为 0
-                    ASSERT(index == 0, "Only 1 default table in MVP\n")
-
-                    // 计算初始化表达式 offset_expr，并将计算结果设置为当前表内偏移量 offset
-                    run_init_expr(m, TYPE_I32, &pos);
-
-                    // 计算初始化表达式 offset_expr 也就是栈式虚拟机执行表达式的字节码中的指令流过程，最终操作数栈顶保存的就是表达式的返回值，即计算结果
-                    // 将栈顶的值弹出并赋值给当前表内偏移量 offset
-                    u32 offset = m->operand_stack[m->sp--].value.uint32;
-
-                    // 函数索引列表（即给定的元素初始化数据）
-                    u32 num_elem = read_LEB128_unsigned(bytes, &pos, 32);
-                    // 遍历函数索引列表，将列表中的函数索引设置为元素的初始值
-                    for (u32 n = 0; n < num_elem; n++) {
-                        m->table.entries[offset + n] = read_LEB128_unsigned(bytes, &pos, 32);
+                    // 读取元素项的类型
+                    u32 elem_type = read_LEB128_unsigned(bytes, &pos, 32);
+                    switch (elem_type) {
+                        case 0:
+                            run_init_expr(m, TYPE_I32, &pos);
+                            offset = m->operand_stack[m->sp--].value.uint32;
+                            table = &m->tables[0];
+                            num_elem = read_LEB128_unsigned(bytes, &pos, 32);
+                            for (u32 i = 0; i < num_elem; i++) {
+                                table->entries[offset + i] = read_LEB128_unsigned(bytes, &pos, 32);
+                            }
+                            break;
+                        case 1:
+                            break;
+                        default:
+                            FATAL("Unsupported elem type %d\n", elem_type)
                     }
                 }
                 pos = start_pos + slen;
                 break;
             }
             case CodeID: {
-                // 解析代码段
-                // 代码段用于存放函数的字节码和局部变量，是 Wasm 二进制模块的核心，其他段存放的都是辅助信息
-                // 为了节约空间，局部变量的信息是被压缩的：即连续多个相同类型的局部变量会被统一记录变量数量和类型
-
-                // 代码段编码格式如下：
-                // code_sec: 0xoA|byte_count|vec<code>
-                // code: byte_count|vec<locals>|expr
-                // locals: local_count|val_type
-
-                // 读取代码段中的代码项的数量
-                u32 code_count = read_LEB_unsigned(bytes, &pos, 32);
-
-                // 声明局部变量的值类型
-                u8 val_type;
-
-                // 遍历代码段中的每个代码项，解析对应数据
-                for (u32 c = 0; c < code_count; c++) {
-                    // 获取代码项
-                    Block *function = &m->functions[m->import_func_count + c];
-
-                    // 读取代码项所占字节数（暂用 4 个字节）
-                    u32 code_size = read_LEB_unsigned(bytes, &pos, 32);
-
-                    // 保存当前位置为代码项的起始位置（除去前面的表示代码项目长度的 4 字节）
-                    u32 payload_start = pos;
-
-                    // 读取 locals 数量（注：相同类型的局部变量算一个 locals）
-                    u32 local_count = read_LEB_unsigned(bytes, &pos, 32);
-
-                    u32 save_pos, lidx, lecount;
-
-                    // 接下来需要对局部变量的相关字节进行两次遍历，所以先保存当前位置，方便第二次遍历前恢复位置
-                    save_pos = pos;
-
-                    // 将代码项的局部变量数量初始化为 0
-                    function->local_count = 0;
-
-                    // 第一次遍历所有的 locals，目的是统计代码项的局部变量数量，将所有 locals 所包含的变量数量相加即可
-                    // 注：相同类型的局部变量算一个 locals
-                    for (u32 l = 0; l < local_count; l++) {
-                        // 读取单个 locals 所包含的变量数量
-                        lecount = read_LEB_unsigned(bytes, &pos, 32);
-
-                        // 累加 locals 所对应的局部变量的数量
-                        function->local_count += lecount;
-
-                        // 局部变量的数量后面接的是局部变量的类型，暂时不需要，标记为无用
-                        val_type = read_LEB_unsigned(bytes, &pos, 7);
-                        (void) val_type;
-                    }
-
-                    // 为保存函数局部变量的值类型的 function->locals 数组申请内存
-                    function->locals = acalloc(function->local_count, sizeof(u32), "function->locals");
-
-                    // 恢复之前的位置，重新遍历所有的 locals
-                    pos = save_pos;
-
-                    // 将局部变量的索引初始化为 0
-                    lidx = 0;
-
-                    // 第二次遍历所有的 locals，目的是所有的代码项中所有的局部变量设置值类型
-                    for (u32 l = 0; l < local_count; l++) {
-                        // 读取单个 locals 所包含的变量数量
-                        lecount = read_LEB_unsigned(bytes, &pos, 32);
-
-                        // 读取单个 locals 的值类型
-                        val_type = read_LEB_unsigned(bytes, &pos, 7);
-
-                        // 为该 locals 所对应的每一个变量设置值类型（注：相同类型的局部变量算一个 locals）
-                        for (u32 n = 0; n < lecount; n++) {
-                            function->locals[lidx++] = val_type;
-                        }
-                    }
-
-                    // 在代码项中，紧跟在局部变量后面的就是代码项的字节码部分
-
-                    // 先读取单个代码项的字节码部分【起始地址】（即局部变量部分的后一个字节）
-                    function->start_addr = pos;
-
-                    // 然后读取单个代码项的字节码部分【结束地址】，同时作为字节码部分【跳转地址】
-                    function->end_addr = payload_start + code_size - 1;
-                    function->br_addr = function->end_addr;
-
-                    // 代码项的字节码部分必须以 0x0b 结尾
-                    ASSERT(bytes[function->end_addr] == 0x0b, "Code section did not end with 0x0b\n")
-
-                    // 更新当前的地址为当前代码项的【结束地址】（即代码项的字节码部分【结束地址】）加 1，以便遍历下一个代码项
-                    pos = function->end_addr + 1;
-                }
+                read_code_section(m, bytes, &pos);
+                ASSERT(pos - start_pos != slen, "Code section length mismatch\n")
                 break;
             }
             case DataID: {
@@ -457,28 +180,31 @@ Module *load_module(const u8 *bytes, const u32 byte_cnt) {
                 // 元素项包含三部分：1.内存索引（初始化哪块内存）2. 内存偏移量（从哪里开始初始化）3. 初始化数据
 
                 // 数据段编码格式如下：
-                // data_sec: 0x09|byte_count|vec<data>
-                // data: mem_idx|offset_expr|vec<byte>
+                // data_sec: 0x0B|byte_count|vec<data>
+                // data: data_mode | ...
+                //       0:u32 | offset_expr | vec<byte>            => active mode
+                //       1:u32 | vec<byte>                          => passive mode
+                //       2:u32 | mem_idx | offset_expr | vec<byte>  => active mode with memory index
 
                 // 读取数据数量
-                u32 mem_count = read_LEB_unsigned(bytes, &pos, 32);
+                u32 mem_count = read_LEB128_unsigned(bytes, &pos, 32);
 
                 // 依次对内存中每个部分进行初始化
                 for (u32 s = 0; s < mem_count; s++) {
                     // 读取内存索引 mem_idx（即初始化哪块内存）
-                    u32 index = read_LEB_unsigned(bytes, &pos, 32);
+                    u32 index = read_LEB128_unsigned(bytes, &pos, 32);
                     // 目前 Wasm 版本规定一个模块只能定义一块内存，所以 index 只能为 0
                     ASSERT(index == 0, "Only 1 default memory in MVP\n")
 
                     // 计算初始化表达式 offset_expr，并将计算结果设置为当前内存偏移量 offset
-                    run_init_expr(m, I32, &pos);
+                    run_init_expr(m, TYPE_I32, &pos);
 
                     // 计算初始化表达式 offset_expr 也就是栈式虚拟机执行表达式的字节码中的指令流过程，最终操作数栈顶保存的就是表达式的返回值，即计算结果
                     // 将栈顶的值弹出并赋值给当前内存偏移量 offset
-                    u32 offset = m->stack[m->sp--].value.uint32;
+                    u32 offset = m->operand_stack[m->sp--].value.uint32;
 
                     // 读取初始化数据所占内存大小
-                    u32 size = read_LEB_unsigned(bytes, &pos, 32);
+                    u32 size = read_LEB128_unsigned(bytes, &pos, 32);
 
                     // 将写在二进制文件中的初始化数据拷贝到指定偏移量的内存中
                     memcpy(m->memory.bytes + offset, bytes + pos, size);
@@ -506,14 +232,14 @@ Module *load_module(const u8 *bytes, const u32 byte_cnt) {
     // 在解析 Wasm 二进制文件中的起始段时，start_function 会被赋值为起始段中保存的起始函数索引（在本地模块所有函数的索引）
     // 所以 m->start_function 不为 -1，说明本地模块存在起始函数，
     // 需要在本地模块已完成初始化后，且本地模块的导出函数被调用之前，执行本地模块的起始函数
-    if (m->start_function != -1) {
+    if (m->start_func != -1) {
         // 保存起始函数索引到 fidx
-        u32 fidx = m->start_function;
-        bool result;
+        u32 fidx = m->start_func;
+        boolean result;
 
         // 起始函数必须处于本地模块内部，不能是从外部导入的函数
         // 注：从外部模块导入的函数在本地模块的所有函数中的前部分，可参考上面解析 Wasm 二进制文件导入段中处理外部模块导入函数的逻辑
-        ASSERT(fidx >= m->import_func_count, "Start function should be local function of native module\n")
+        ASSERT(fidx >= m->import_func_cnt, "Start function should be local function of native module\n")
 
         // 调用 Wasm 模块的起始函数
         result = invoke(m, fidx);

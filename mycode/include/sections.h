@@ -4,7 +4,7 @@
 #include "module.h"
 #include "utils.h"
 
-void parse_table_type(Module *m, u32 *pos);
+u32 parse_table_type(Module *m, u32 *pos);
 void parse_memory_type(Module *m, u32 *pos);
 
 void read_type_section(Module *m, const u8 *bytes, u32 *pos);

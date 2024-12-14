@@ -12,6 +12,9 @@ typedef double f64;
 typedef float f32;
 typedef unsigned char boolean;
 
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#define likely(x) __builtin_expect(!!(x), 1)
+
 #define WASM_MAGIC_CODE 0x6d736100// 代表这是一个wasm文件
 #define WASM_VERSION 0x01         // 版本号
 
@@ -22,13 +25,13 @@ typedef unsigned char boolean;
 #define BLOCK_STACK_SIZE 0x1000// 块栈大小4KB
 #define BR_Table_SIZE 0x1000   // 跳转表大小64KB
 
-#define TYPE_I32 0x7f // 32位整型   mask 0x01
-#define TYPE_I64 0x7e // 64位整型   mask 0x02
-#define TYPE_F32 0x7d // 32位浮点型 mask 0x03
-#define TYPE_F64 0x7c // 64位浮点型 mask 0x04
-#define TYPE_V128 0x7b// 128位整型  mask 0x05
+#define TYPE_I32 0x7f  // 32位整型   mask 0x01
+#define TYPE_I64 0x7e  // 64位整型   mask 0x02
+#define TYPE_F32 0x7d  // 32位浮点型 mask 0x03
+#define TYPE_F64 0x7c  // 64位浮点型 mask 0x04
+#define TYPE_V128 0x7b // 128位整型  mask 0x05
+#define TYPE_EMPTY 0x40// 空类型     mask 0x40
 
-#define TYPE_BLOCK 0x40   // 块类型        mask 0x40
 #define TYPE_FUNC 0x60    // 函数类型      mask 0x20
 #define TYPE_REF_FUNC 0x70// 函数引用类型  mask 0x10
 
@@ -148,13 +151,15 @@ typedef struct {
     Type *func_types;// 用于存储模块中所有函数签名
     u32 type_cnt;    // 模块中所有函数签名的数量
 
-    u32 import_func_cnt; // 导入函数的数量
-    u32 function_cnt;    // 所有函数的数量（包括导入函数）
-    u32 start_func;      // 起始函数在本地模块所有函数中索引，而起始函数是在【模块完成初始化后】，【被导出函数可调用之前】自动被调用的函数
-    Block *funcs;        // 用于存储模块中所有函数（包括导入函数和模块内定义函数）
+    u32 import_func_cnt;// 导入函数的数量
+    u32 function_cnt;   // 所有函数的数量（包括导入函数）
+    u32 start_func;     // 起始函数在本地模块所有函数中索引，而起始函数是在【模块完成初始化后】，【被导出函数可调用之前】自动被调用的函数
+    Block *funcs;       // 用于存储模块中所有函数（包括导入函数和模块内定义函数）
+    // 很蠢的做法，后续优化为在函数内部使用一个 pair 存储，然后二分查找。
     Block **block_lookup;// 模块中所有 Block 的 map，其中 key 为为对应操作码 Block_/Loop/If 的地址
 
-    Table table;// 表
+    Table *tables;// 表
+    u32 table_cnt;// 表数量
 
     Memory memory;// 内存
 

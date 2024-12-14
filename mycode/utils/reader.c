@@ -1,6 +1,6 @@
 #include "../include/utils.h"
 
-u64 read_LEB128(const u8 *bytes, u32 *pos, u32 maxbits, boolean sign) {
+inline u64 read_LEB128(const u8 *bytes, u32 *pos, u32 maxbits, boolean sign) {
     u64 result = 0;
     u32 shift = 0;
     u32 bcnt = 0;
